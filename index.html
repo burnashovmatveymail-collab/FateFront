@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>2D Иллюзия поворота карты</title>
+<title>FateFront</title>
 <style>
 html, body {
   margin: 0;
@@ -36,9 +36,16 @@ resize();
 
 const state = {
   pos: { x: 100, y: 100 },
-  mapAngle: 0, // угол поворота карты
+  mapAngle: 0,
   speed: 200,
-  keys: { w:false, a:false, s:false, d:false, left:false, right:false }
+  keys: { w:false, a:false, s:false, d:false, left:false, right:false },
+  jump: {
+    active: false,
+    startTime: 0,
+    cooldown: 3000,
+    lastJump: -9999,
+    duration: 900 // 0.9 сек
+  }
 };
 
 const walls = [
@@ -59,6 +66,14 @@ addEventListener('keydown', e => {
   if(k==='d') state.keys.d=true;
   if(k==='arrowleft') state.keys.left=true;
   if(k==='arrowright') state.keys.right=true;
+  if(k==='arrowup') {
+    const now = performance.now();
+    if(now - state.jump.lastJump > state.jump.cooldown) {
+      state.jump.active = true;
+      state.jump.startTime = now;
+      state.jump.lastJump = now;
+    }
+  }
   if(k==='f') {
     doors.forEach(door => {
       const dx = state.pos.x - (door.x + door.w/2);
@@ -105,14 +120,36 @@ function update(dt){
   hud.innerHTML=`pos: ${state.pos.x.toFixed(1)}, ${state.pos.y.toFixed(1)}`;
 }
 
+function getJumpScale() {
+  if(!state.jump.active) return 1;
+  const t = performance.now() - state.jump.startTime;
+  const p = t / state.jump.duration;
+  if(p >= 1) {
+    state.jump.active = false;
+    return 1;
+  }
+  // Реалистичный прыжок: быстрый вверх, пауза, медленное падение
+  if(p < 0.3) { // взлёт
+    return 1 + 0.2 * (p/0.3);
+  } else if(p < 0.4) { // пауза
+    return 1.2;
+  } else { // падение
+    const fallP = (p-0.4)/0.6;
+    return 1.2 - 0.2*fallP;
+  }
+}
+
 function draw(){
   ctx.clearRect(0,0,canvas.width,canvas.height);
   const cx = canvas.width/2;
   const cy = canvas.height/2;
 
+  const scale = getJumpScale();
+
   ctx.save();
   ctx.translate(cx, cy);
-  ctx.rotate(-state.mapAngle); // вращаем карту вокруг игрока
+  ctx.scale(1/scale, 1/scale); // карта уменьшается, игрок кажется больше
+  ctx.rotate(-state.mapAngle);
   ctx.translate(-state.pos.x, -state.pos.y);
 
   // стены
@@ -125,9 +162,10 @@ function draw(){
 
   ctx.restore();
 
-  // игрок всегда смотрит вверх, вне поворота карты
+  // игрок
   ctx.save();
   ctx.translate(cx, cy);
+  ctx.scale(scale, scale);
   ctx.fillStyle='#4ade80';
   ctx.beginPath();
   ctx.moveTo(0, -16);
@@ -138,7 +176,7 @@ function draw(){
   ctx.restore();
 }
 
-function loop(now){
+function loop(){
   requestAnimationFrame(loop);
   const dt=1/60;
   update(dt);
