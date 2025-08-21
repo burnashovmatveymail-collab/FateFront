@@ -27,7 +27,10 @@ const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 const hud = document.getElementById('hud');
 
-function resize() { canvas.width = innerWidth; canvas.height = innerHeight; }
+function resize() {
+  canvas.width = innerWidth;
+  canvas.height = innerHeight;
+}
 addEventListener('resize', resize);
 resize();
 
@@ -35,40 +38,36 @@ const state = {
   pos: { x: 100, y: 100 },
   mapAngle: 0,
   speed: 200,
-  keys: { w:false, a:false, s:false, d:false, left:false, right:false },
-  jump: { active: false, startTime: 0, cooldown: 3000, lastJump: -9999, duration: 900 }
+  keys: { w:false, a:false, s:false, d:false, left:false, right:false, up:false },
+  jumping: false,
+  jumpScale: 1,
+  lastJump: 0
 };
 
+// --- СТЕНЫ карты (только реальные стены!) ---
 const walls = [
-  {x:50,y:50,w:800,h:20, type:'solid'},
-  {x:50,y:50,w:20,h:600, type:'solid'},
-  {x:830,y:50,w:20,h:600, type:'solid'},
-  {x:50,y:630,w:800,h:20, type:'solid'},
+  {x:0, y:0, w:1200, h:20},
+  {x:0, y:580, w:1200, h:20},
+  {x:0, y:0, w:20, h:600},
+  {x:1180, y:0, w:20, h:600},
 
-  {x:150,y:150,w:200,h:20, type:'jumpable'},
-  {x:400,y:150,w:20,h:150, type:'jumpable'},
-  {x:200,y:300,w:300,h:20, type:'jumpable'},
-  {x:600,y:100,w:20,h:200, type:'jumpable'},
-
-  {x:100,y:450,w:150,h:20, type:'solid'},
-  {x:300,y:500,w:20,h:100, type:'solid'},
-  {x:500,y:400,w:150,h:20, type:'solid'},
-  {x:700,y:500,w:20,h:100, type:'solid'},
-
-  {x:600,y:550,w:100,h:20, type:'jumpable'},
-  {x:650,y:350,w:20,h:100, type:'jumpable'},
-  {x:400,y:600,w:200,h:20, type:'jumpable'}
+  // Пример комнат
+  {x:300, y:150, w:20, h:300},
+  {x:600, y:100, w:20, h:200},
+  {x:850, y:300, w:20, h:200}
 ];
 
-const doors = [
-  {x:230,y:50,w:40,h:20,open:false},
-  {x:700,y:50,w:40,h:20,open:false},
+// --- Точки закладки бомбы (только краска на полу) ---
+const bombSites = [
+  {x:200, y:400, size:50, name:"A"},
+  {x:800, y:150, size:50, name:"B"}
 ];
 
-const npc = { x: 500, y: 200, angle: 0 };
-const npcViewDistance = 100;
-const npcViewAngle = Math.PI / 3; // 60° в каждую сторону
-const npcTurnSpeed = 2.5 * Math.PI / 180; // максимальный поворот за кадр
+// --- Спавны ---
+const spawns = {
+  counter: {x:80, y:150, r:30},    // спецназ (синий)
+  terrorist: {x:1050, y:500, r:30} // террористы (оранжевый)
+};
 
 addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
@@ -79,20 +78,12 @@ addEventListener('keydown', e => {
   if(k==='arrowleft') state.keys.left=true;
   if(k==='arrowright') state.keys.right=true;
   if(k==='arrowup') {
-    const now = performance.now();
-    if(now - state.jump.lastJump > state.jump.cooldown) {
-      state.jump.active = true;
-      state.jump.startTime = now;
-      state.jump.lastJump = now;
+    const now = performance.now()/1000;
+    if(now - state.lastJump > 3 && !state.jumping) {
+      state.jumping = true;
+      state.jumpStart = now;
+      state.lastJump = now;
     }
-  }
-  if(k==='f') {
-    doors.forEach(door => {
-      const dx = state.pos.x - (door.x + door.w/2);
-      const dy = state.pos.y - (door.y + door.h/2);
-      const dist = Math.hypot(dx,dy);
-      if(dist<50) door.open = !door.open;
-    });
   }
 });
 addEventListener('keyup', e => {
@@ -105,42 +96,8 @@ addEventListener('keyup', e => {
   if(k==='arrowright') state.keys.right=false;
 });
 
-function lineIntersectsRect(x1, y1, x2, y2, rect) {
-    const left = rect.x, right = rect.x + rect.w;
-    const top = rect.y, bottom = rect.y + rect.h;
-    function ccw(Ax,Ay,Bx,By,Cx,Cy){ return (Cy-Ay)*(Bx-Ax) > (By-Ay)*(Cx-Ax); }
-    function intersect(Ax,Ay,Bx,By,Cx,Cy,Dx,Dy){
-        return ccw(Ax,Ay,Cx,Cy,Dx,Dy) !== ccw(Bx,By,Cx,Cy,Dx,Dy) && ccw(Ax,Ay,Bx,By,Cx,Cy) !== ccw(Ax,Ay,Bx,By,Dx,Dy);
-    }
-    if(intersect(x1,y1,x2,y2,left,top,right,top)) return true;
-    if(intersect(x1,y1,x2,y2,right,top,right,bottom)) return true;
-    if(intersect(x1,y1,x2,y2,right,bottom,left,bottom)) return true;
-    if(intersect(x1,y1,x2,y2,left,bottom,left,top)) return true;
-    return false;
-}
-
-function canSeePlayer() {
-    const dx = state.pos.x - npc.x;
-    const dy = state.pos.y - npc.y;
-    const dist = Math.hypot(dx, dy);
-    if(dist > npcViewDistance) return false;
-
-    const angleToPlayer = Math.atan2(dy, dx);
-    let deltaAngle = angleToPlayer - npc.angle;
-    deltaAngle = Math.atan2(Math.sin(deltaAngle), Math.cos(deltaAngle));
-    if(Math.abs(deltaAngle) > npcViewAngle) return false;
-
-    for(const wall of walls){
-        if(lineIntersectsRect(npc.x,npc.y,state.pos.x,state.pos.y,wall)) return false;
-    }
-    for(const door of doors){
-        if(!door.open && lineIntersectsRect(npc.x,npc.y,state.pos.x,state.pos.y,door)) return false;
-    }
-    return true;
-}
-
 function update(dt){
-  const turnSpeed = 2.5 * Math.PI / 180;
+  const turnSpeed = 5 * Math.PI / 180;
   if(state.keys.left) state.mapAngle -= turnSpeed;
   if(state.keys.right) state.mapAngle += turnSpeed;
 
@@ -157,76 +114,67 @@ function update(dt){
   const newY = state.pos.y + dy;
   const playerSize = 16;
   let collision=false;
-
-  [...walls,...doors.filter(d=>!d.open)].forEach(rect=>{
+  walls.forEach(rect=>{
     if(newX+playerSize>rect.x && newX-playerSize<rect.x+rect.w &&
-       newY+playerSize>rect.y && newY-playerSize<rect.y+rect.h) {
-      if(rect.type==='jumpable' && state.jump.active) {
-      } else collision=true;
-    }
+       newY+playerSize>rect.y && newY-playerSize<rect.y+rect.h) collision=true;
   });
-
   if(!collision){ state.pos.x=newX; state.pos.y=newY; }
 
-  if(canSeePlayer()) {
-    const targetAngle = Math.atan2(state.pos.y - npc.y, state.pos.x - npc.x);
-    let delta = targetAngle - npc.angle;
-    delta = Math.atan2(Math.sin(delta), Math.cos(delta));
-    if(Math.abs(delta) > npcTurnSpeed){
-        npc.angle += Math.sign(delta) * npcTurnSpeed;
+  // прыжок (как было в базе!)
+  if(state.jumping){
+    const t = performance.now()/1000 - state.jumpStart;
+    if(t<0.9){
+      state.jumpScale = 1 + Math.sin(t/0.9 * Math.PI) * 0.5;
     } else {
-        npc.angle = targetAngle;
+      state.jumping=false;
+      state.jumpScale=1;
     }
   }
 
-  hud.innerHTML=`pos: ${(state.pos.x/10).toFixed(1)}m, ${(state.pos.y/10).toFixed(1)}m`;
-}
-
-function getJumpScale() {
-  if(!state.jump.active) return 1;
-  const t = performance.now() - state.jump.startTime;
-  const p = t / state.jump.duration;
-  if(p >= 1) { state.jump.active = false; return 1; }
-  if(p < 0.3) return 1 + 0.2*(p/0.3);
-  if(p < 0.4) return 1.2;
-  return 1.2 - 0.2*((p-0.4)/0.6);
+  hud.innerHTML=`pos: ${state.pos.x.toFixed(1)}, ${state.pos.y.toFixed(1)}`;
 }
 
 function draw(){
   ctx.clearRect(0,0,canvas.width,canvas.height);
   const cx = canvas.width/2;
   const cy = canvas.height/2;
-  const scale = getJumpScale();
 
   ctx.save();
   ctx.translate(cx, cy);
-  ctx.scale(1/scale, 1/scale);
+  ctx.scale(state.jumpScale, state.jumpScale); 
   ctx.rotate(-state.mapAngle);
   ctx.translate(-state.pos.x, -state.pos.y);
 
+  // стены
   ctx.fillStyle='#7c7f85';
   walls.forEach(w=>ctx.fillRect(w.x,w.y,w.w,w.h));
 
-  ctx.fillStyle='#f59e0b';
-  doors.forEach(d=>{ if(!d.open) ctx.fillRect(d.x,d.y,d.w,d.h); });
+  // бомбы (краска на полу)
+  bombSites.forEach(site=>{
+    ctx.fillStyle='rgba(255,0,0,0.3)';
+    ctx.beginPath();
+    ctx.arc(site.x, site.y, site.size, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle='white';
+    ctx.fillText(site.name, site.x-4, site.y+4);
+  });
 
-  ctx.save();
-  ctx.translate(npc.x, npc.y);
-  ctx.rotate(npc.angle);
-  ctx.fillStyle='#f87171';
+  // спавны
+  ctx.fillStyle='rgba(37,99,235,0.4)'; // синий
   ctx.beginPath();
-  ctx.moveTo(0, -16);
-  ctx.lineTo(12, 16);
-  ctx.lineTo(-12, 16);
-  ctx.closePath();
+  ctx.arc(spawns.counter.x, spawns.counter.y, spawns.counter.r, 0, Math.PI*2);
   ctx.fill();
-  ctx.restore();
+
+  ctx.fillStyle='rgba(249,115,22,0.4)'; // оранжевый
+  ctx.beginPath();
+  ctx.arc(spawns.terrorist.x, spawns.terrorist.y, spawns.terrorist.r, 0, Math.PI*2);
+  ctx.fill();
 
   ctx.restore();
 
+  // игрок
   ctx.save();
   ctx.translate(cx, cy);
-  ctx.scale(scale, scale);
   ctx.fillStyle='#4ade80';
   ctx.beginPath();
   ctx.moveTo(0, -16);
